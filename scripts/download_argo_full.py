@@ -1,10 +1,12 @@
+from pathlib import Path
 import os
 import requests
 import pandas as pd
 import numpy as np
 from io import BytesIO
 
-base_dir = r"C:\Users\hemas\OneDrive\Desktop\dl project\DL-project"
+# Repo root by default; override with DL_PROJECT_DIR to point at a different checkout/data location.
+base_dir = os.environ.get("DL_PROJECT_DIR") or str(Path(__file__).resolve().parents[1])
 out_dir = os.path.join(base_dir, "data", "raw", "argo")
 os.makedirs(out_dir, exist_ok=True)
 out_file = os.path.join(out_dir, "indian_ocean_argo_full.csv")

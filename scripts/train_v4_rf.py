@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import os
 import json
@@ -11,7 +12,8 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-base_dir = r"C:\Users\hemas\OneDrive\Desktop\dl project\DL-project"
+# Repo root by default; override with DL_PROJECT_DIR to point at a different checkout/data location.
+base_dir = os.environ.get("DL_PROJECT_DIR") or str(Path(__file__).resolve().parents[1])
 out_dir = os.path.join(base_dir, "data", "processed")
 
 print("1. Loading V4 sparse matrices and targets...")
