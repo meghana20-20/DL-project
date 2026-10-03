@@ -407,6 +407,33 @@ def main(data_dir=DEFAULT_DATA_DIR, fig_dir=DEFAULT_FIG_DIR):
     plt.savefig(fig_dir / "v4_mlp_training_validation_loss.png")
     plt.close()
 
+    # --- PLOT TEST-SET RESIDUALS ---
+    y_test_mt = meta["y_test_mt"]
+    residuals = y_test_mt - p_test
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(p_test, y_test_mt, alpha=0.4, s=12)
+    lims = [0, max(y_test_mt.max(), p_test.max())]
+    plt.plot(lims, lims, color='red', linestyle='--', label='y = x')
+    plt.title('V4 Optimized MLP Predicted vs Actual Catch (Test Set)')
+    plt.xlabel('Predicted Catch (MT)')
+    plt.ylabel('Actual Catch (MT)')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(fig_dir / "v4_mlp_predicted_vs_actual.png")
+    plt.close()
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(p_test, residuals, alpha=0.4, s=12)
+    plt.axhline(0, color='red', linestyle='--', label='Zero residual')
+    plt.title('V4 Optimized MLP Residuals vs Predicted (Test Set)')
+    plt.xlabel('Predicted Catch (MT)')
+    plt.ylabel('Residual (Actual - Predicted, MT)')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(fig_dir / "v4_mlp_residuals.png")
+    plt.close()
+
     # --- COMPARE WITH RF ---
     with open(data_dir / "v4_random_forest_results.json", "r") as f:
         rf_results = json.load(f)
