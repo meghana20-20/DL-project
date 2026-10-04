@@ -138,3 +138,78 @@ Takeaways:
 * Tuning improved typical-haul error (MAE, median AE) but not RMSE or R², which are dominated by a handful of very large hauls: the 5 largest test errors account for about 93% of the total squared error. The Random Forest remains best on RMSE, R² and Pearson.
 * Ranking by log-space RMSE and by MT-space RMSE disagree (Spearman 0.27; 4 of the top 10 configs in common), so the choice of selection metric matters.
 * In the ablation, early stopping clearly narrows the train/validation gap (0.14 vs 0.19 in log-MSE); the effect of dropout and weight decay is within seed noise.
+
+---
+
+## 🧩 Using the model
+
+For anyone wiring the tuned MLP into an app. Files in `models/`: `v4_mlp_tuned.pt` / `.onnx` (the network), `v4_mlp_tuned_config.json` (architecture + the prediction clip), `v4_preprocessor.joblib` (fitted sklearn `ColumnTransformer`), `v4_feature_names.json` (the 1,573 encoded feature names).
+
+**Read this first:** the model outputs **`log1p(catch in MT)`**, not tonnage, and its quality is modest: on the test set R² is about **0.07** (Pearson 0.32), and the Random Forest baseline is better (R² 0.19). It is reasonable for a typical haul (test median absolute error about 2.3 MT) but misses very large hauls badly. The UI should present predictions as **rough estimates**, not precise values.
+
+### Raw input columns
+
+One row = one IOTC catch record. The preprocessor needs these columns (everything else the dataset carries is ignored):
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `FLEET`, `FISHERY`, `FISHERY_GROUP`, `GEAR`, `SPECIES`, `SPECIES_CATEGORY` | categorical (str) | IOTC names, e.g. `FLEET="Japan"`, `GEAR="Longline (deep-freezing)"` |
+| `FISHING_GROUND_CODE` | categorical (**must be `str`**) | IOTC grid code, e.g. `"5106060"` (1,484 known codes) |
+| `MONTH_START` | int 1-12 | |
+| `fishing_ground_lat`, `fishing_ground_lon`, `grid_resolution`, `ocean_area_iotc_km2` | float | grid-cell centroid, 1 or 5 degree cell size, ocean area; can be NaN |
+| `argo_temp`, `argo_sal`, `nearest_argo_distance_km` | float, NaN if no Argo match | |
+| `total_effort_hooks`, `total_effort_fdays` | float, NaN if no effort record | |
+| `effort_record_count` | int | |
+
+Five indicator flags (`has_effort_hooks`, `has_effort_fdays`, `has_argo_temp`, `has_argo_sal`, `has_argo_match`) are derived from the NaN pattern by the same step used in `scripts/preprocess_v4.py`; the example below reproduces it. `YEAR` is not a model feature.
+
+Missing values: numeric NaNs are median-imputed and categorical NaNs get the most frequent training category. **Unseen categories** (a fleet, gear or grid code not in the training data) do **not** raise an error: the one-hot block for that column is all zeros, so the model just has no information from it. The list of known values is `preprocessor.named_transformers_["cat"].named_steps["ohe"].categories_`. Known categories are few for some columns (`SPECIES`: 3, `SPECIES_CATEGORY`: 1, so they carry almost no signal) and many for others (`FISHING_GROUND_CODE`: 1,484).
+
+**Gotcha:** passing `FISHING_GROUND_CODE` as an integer silently matches nothing (all zeros, no warning). Always cast it to `str`.
+
+### Example
+
+```python
+import json
+import torch  # import torch BEFORE anything that loads sklearn (see scripts/train_v4_mlp.py)
+import joblib
+import numpy as np
+import pandas as pd
+from scripts.train_v4_mlp import load_mlp_checkpoint
+
+CONFIG, WEIGHTS = "models/v4_mlp_tuned_config.json", "models/v4_mlp_tuned.pt"
+preprocessor = joblib.load("models/v4_preprocessor.joblib")  # needs the sklearn version it was saved with
+model = load_mlp_checkpoint(CONFIG, WEIGHTS)                 # eval mode
+clip_max = json.load(open(CONFIG))["clip_max_log"]           # same upper bound used in training (~11,974 MT)
+
+CAT = ["FLEET", "FISHERY", "FISHERY_GROUP", "GEAR", "SPECIES", "SPECIES_CATEGORY", "FISHING_GROUND_CODE"]
+NUM = ["MONTH_START", "fishing_ground_lat", "fishing_ground_lon", "grid_resolution", "ocean_area_iotc_km2",
+       "argo_temp", "argo_sal", "nearest_argo_distance_km", "total_effort_hooks", "total_effort_fdays",
+       "effort_record_count"]
+
+
+def predict_catch_mt(row: dict) -> float:
+    """Rough catch estimate in metric tons for one record (omit or set None any value that is unknown)."""
+    df = pd.DataFrame([row]).reindex(columns=CAT + NUM)
+    df[NUM] = df[NUM].astype(float)
+    df["FISHING_GROUND_CODE"] = df["FISHING_GROUND_CODE"].astype(str)
+    # same feature engineering as scripts/preprocess_v4.py
+    df["has_effort_hooks"] = df["total_effort_hooks"].notna().astype(int)
+    df["has_effort_fdays"] = df["total_effort_fdays"].notna().astype(int)
+    df["has_argo_temp"] = df["argo_temp"].notna().astype(int)
+    df["has_argo_sal"] = df["argo_sal"].notna().astype(int)
+    df["has_argo_match"] = df["nearest_argo_distance_km"].notna().astype(int)
+    df[["total_effort_hooks", "total_effort_fdays"]] = df[["total_effort_hooks", "total_effort_fdays"]].fillna(0)
+
+    x = torch.tensor(preprocessor.transform(df).toarray(), dtype=torch.float32)
+    with torch.no_grad():
+        log_pred = model(x.to(next(model.parameters()).device)).item()   # = log1p(catch MT)
+    return float(np.expm1(np.clip(log_pred, 0.0, clip_max)))
+
+
+# e.g. a record from data/processed/v4_test.csv:
+row = pd.read_csv("data/processed/v4_test.csv", nrows=1).iloc[0].to_dict()
+print(predict_catch_mt(row))
+```
+
+The ONNX file (`models/v4_mlp_tuned.onnx`, input `features` of shape `[batch, 1573]`, output `log_catch_pred`) gives the same network for non-Python runtimes; apply the same preprocessing, then `expm1` and the clip.
