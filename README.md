@@ -44,13 +44,14 @@ DL PROJECT/
 │   │   ├── v4_random_forest_baseline.joblib     # Baseline RF Model
 │   │   ├── v4_mlp_optimized.pt                  # Optimized PyTorch MLP
 │   │   └── *.json                               # Comprehensive audit & metrics reports
-│   └── figures/                   
-│       └── v4_mlp_training_validation_loss.png
-├── scratch/                       # Python scripts for data building, auditing, and modeling
+├── figures/                       # Loss curves, residual plots, tuning plots (tracked)
+├── models/                        # Tuned MLP: .pt weights, .onnx export, config (tracked)
+├── scripts/                       # Python scripts for data building, auditing, and modeling
 │   ├── build_modeling_v4.py       # Constructs the V4 dataset
 │   ├── preprocess_v4.py           # Feature engineering & strict scaling/encoding
 │   ├── train_v4_rf.py             # Random Forest training script
-│   └── train_v4_mlp.py            # PyTorch MLP tuning & training script
+│   ├── train_v4_mlp.py            # PyTorch MLP (importable: FishMLP, get_dataloaders, train_mlp, ...) + original sweep
+│   └── tune_v4_mlp.py             # Tuning & evaluation (random search, seeds, ablation, export)
 ├── requirements.txt               # Pinned project dependencies
 └── README.md                      # Complete project documentation
 ```
@@ -81,3 +82,59 @@ We evaluated a classical machine learning baseline against a PyTorch Deep Learni
 *   **Test Pearson:** 0.187
 
 **Key Finding:** The MLP minimizes MAE better (due to the proportional nature of the log1p loss function), making it more accurate for typical median catches. However, the Random Forest drastically outperforms the MLP on RMSE, R², and Pearson correlation, demonstrating a superior capability to handle extreme variance and rare massive commercial hauls.
+
+---
+
+## 🎛️ Tuning & Evaluation
+
+All scripts resolve paths relative to the repo root (`data/`, `figures/`, `models/`). To use a different checkout or data location, set `DL_PROJECT_DIR`:
+
+```bash
+export DL_PROJECT_DIR=/path/to/DL-project   # optional; defaults to the repo root
+```
+
+Task: regression on catch tonnage (MT). The network is trained on `log1p(MT)`; metrics are reported in MT after `expm1` (predictions clipped in log space to `[0, max train log target + 1]`, i.e. at most about 11,974 MT).
+
+### Run
+
+```bash
+python scripts/build_modeling_v4.py && python scripts/preprocess_v4.py   # build data/processed/
+python scripts/train_v4_rf.py                                            # Random Forest baseline
+python scripts/train_v4_mlp.py                                           # original 10-config MLP sweep
+python scripts/tune_v4_mlp.py                                            # tuning & evaluation (~5 min on CPU)
+python scripts/tune_v4_mlp.py --quick --out-dir /tmp/q --fig-dir /tmp/qf # tiny smoke run, writes elsewhere
+```
+
+`tune_v4_mlp.py` runs, in order: a seeded (seed 0) 40-config random search over architecture, dropout, learning rate (log-uniform 1e-4 to 3e-3), weight decay, batch size and optimizer (adam / adamw / SGD with momentum 0.9); the top 3 configs x 5 seeds; a regularization ablation on the chosen config (3 seeds: as chosen, dropout 0, weight decay 0, no early stopping at a fixed 60 epochs); then the final evaluation. Configs are ranked by **validation log-space RMSE** (the training objective). The test set is used once, for the final chosen model, and never for selection. It never overwrites the original `v4_mlp_optimized.*` files.
+
+### Outputs
+
+| Location | Files |
+| :--- | :--- |
+| `data/processed/` (gitignored) | `v4_mlp_tuning_results.csv`, `v4_mlp_tuning_seeds.csv`, `v4_mlp_ablation.csv`, `v4_mlp_tuned_results.json`, `v4_mlp_tuned_comparison.csv`, `v4_mlp_tuned_test_predictions.npy`, `v4_mlp_tuning.log` |
+| `models/` (tracked) | `v4_mlp_tuned.pt` (state_dict), `v4_mlp_tuned.onnx` (dynamic batch axis), `v4_mlp_tuned_config.json` |
+| `figures/` (tracked) | `v4_mlp_tuned_loss_curves.png`, `v4_mlp_tuned_predicted_vs_actual_log1p.png`, `v4_mlp_tuned_residuals_symlog.png`, `v4_mlp_tuning_top10_val_rmse.png`, `v4_mlp_tuning_val_rmse_vs_lr.png` |
+
+The tuned model's input is the 1,573-dim preprocessed feature vector (`v4_preprocessor.joblib`) and its output is `log1p(MT)`. To load it:
+
+```python
+from scripts.train_v4_mlp import load_mlp_checkpoint, predict_mt
+model = load_mlp_checkpoint("models/v4_mlp_tuned_config.json", "models/v4_mlp_tuned.pt")
+```
+
+### Results (last run, test set, MT)
+
+Chosen config: SGD (momentum 0.9), `[128, 64]`, dropout 0.2, lr 3.29e-4, weight decay 1e-5, batch size 64 (seed 2). Over 5 seeds its validation log-RMSE is 0.962 +/- 0.012 and validation MT RMSE 296.1 +/- 9.8.
+
+| Model | MAE | RMSE | R² | Pearson | Median AE | Top-5 rows' share of squared error |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tuned MLP | **21.8** | 222.3 | 0.067 | 0.321 | **2.34** | 93.3% |
+| Original MLP (first sweep, config `[256,128,64]`, lr 1e-4) | 22.9 | 220.6 | 0.081 | 0.297 | 2.71 | 92.5% |
+| Random Forest | 25.6 | **206.8** | **0.193** | **0.460** | 3.37 | 93.3% |
+
+Tuned MLP across splits: train RMSE 77.2 / R² 0.383, validation RMSE 287.5 / R² 0.069, test RMSE 222.3 / R² 0.067.
+
+Takeaways:
+* Tuning improved typical-haul error (MAE, median AE) but not RMSE or R², which are dominated by a handful of very large hauls: the 5 largest test errors account for about 93% of the total squared error. The Random Forest remains best on RMSE, R² and Pearson.
+* Ranking by log-space RMSE and by MT-space RMSE disagree (Spearman 0.27; 4 of the top 10 configs in common), so the choice of selection metric matters.
+* In the ablation, early stopping clearly narrows the train/validation gap (0.14 vs 0.19 in log-MSE); the effect of dropout and weight decay is within seed noise.
