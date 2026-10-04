@@ -126,15 +126,22 @@ def get_dataloaders(data_dir=DEFAULT_DATA_DIR, batch_size=128, seed=42, data=Non
     return train_loader, val_loader, test_loader, meta
 
 
-def predict_mt(model, loader, device=None):
-    """Predict catch tonnage (MT) for every row in loader (undoes the log1p target transform)."""
+def predict_mt(model, loader, device=None, clip_max=None):
+    """Predict catch tonnage (MT) for every row in loader (undoes the log1p target transform).
+
+    If clip_max is given, the log-space output is clipped to [0, clip_max] before expm1 so a
+    diverged model cannot produce absurd tonnages. Default None leaves predictions unchanged.
+    """
     device = device or next(model.parameters()).device
     model.eval()
     preds_log = []
     with torch.no_grad():
         for X_batch, _ in loader:
             preds_log.append(model(X_batch.to(device)).cpu().numpy())
-    return np.expm1(np.vstack(preds_log).flatten())
+    preds_log = np.vstack(preds_log).flatten()
+    if clip_max is not None:
+        preds_log = np.clip(preds_log, 0.0, clip_max)
+    return np.expm1(preds_log)
 
 
 def train_mlp(config, train_loader, val_loader, y_val_mt=None, is_baseline=False, device=None):
