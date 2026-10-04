@@ -254,6 +254,24 @@ def run_ablation(cfg, data, clip_max, device, out_dir, log, seeds):
 SERIES = {'adam': ('#2a78d6', 'o'), 'adamw': ('#eb6834', 's'), 'sgd': ('#1baf7a', '^')}
 
 
+def plot_residuals(fig_dir, y_test, p_test, plt):
+    """Residual (actual - predicted) vs predicted catch: log x axis, symmetric-log y axis.
+    Rows predicted as exactly 0 MT (the log-space clip floor) cannot sit on a log axis and are left out."""
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    keep = p_test > 0
+    plt.figure(figsize=(10, 6))
+    plt.scatter(p_test[keep], (y_test - p_test)[keep], alpha=0.4, s=12)
+    plt.axhline(0, color='red', linestyle='--', label='Zero residual')
+    plt.xscale('log'); plt.yscale('symlog', linthresh=10)
+    plt.title('Tuned MLP Residuals vs Predicted (Test Set)')
+    plt.xlabel('Predicted Catch (MT, log scale)'); plt.ylabel('Residual (Actual - Predicted, MT, symlog scale)')
+    if not keep.all():
+        plt.figtext(0.99, 0.01, f"{int((~keep).sum())} of {len(p_test)} points predicted as 0 MT not shown",
+                    ha='right', fontsize=8, color='gray')
+    plt.legend(); plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(fig_dir / 'v4_mlp_tuned_residuals_symlog.png'); plt.close()
+
+
 def make_figures(fig_dir, search_df, chosen_res, y_test, p_test, plt):
     fig_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,15 +296,7 @@ def make_figures(fig_dir, search_df, chosen_res, y_test, p_test, plt):
     plt.legend(); plt.grid(True, linestyle='--', alpha=0.7)
     plt.savefig(fig_dir / 'v4_mlp_tuned_predicted_vs_actual_log1p.png'); plt.close()
 
-    # 3. residuals with a symmetric-log y axis (x symlog too: predictions are heavily right-skewed)
-    plt.figure(figsize=(10, 6))
-    plt.scatter(p_test, y_test - p_test, alpha=0.4, s=12)
-    plt.axhline(0, color='red', linestyle='--', label='Zero residual')
-    plt.yscale('symlog', linthresh=10); plt.xscale('symlog', linthresh=1)
-    plt.title('Tuned MLP Residuals vs Predicted (Test Set, symlog axes)')
-    plt.xlabel('Predicted Catch (MT)'); plt.ylabel('Residual (Actual - Predicted, MT)')
-    plt.legend(); plt.grid(True, linestyle='--', alpha=0.7)
-    plt.savefig(fig_dir / 'v4_mlp_tuned_residuals_symlog.png'); plt.close()
+    plot_residuals(fig_dir, y_test, p_test, plt)
 
     # 4. top-10 configs by validation RMSE (log space = selection metric, with MT RMSE beside it)
     top = search_df.head(10).iloc[::-1]
