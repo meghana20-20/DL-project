@@ -1,0 +1,16 @@
+{
+    "arch": [
+        128,
+        64
+    ],
+    "dropout": 0.2,
+    "lr": 0.000329,
+    "weight_decay": 1e-05,
+    "batch_size": 64,
+    "optimizer": "sgd",
+    "seed": 2,
+    "config_id": 26,
+    "clip_max_log": 9.390563011169434,
+    "val_log_rmse": 0.9499121147618439,
+    "best_epoch": 67
+}
